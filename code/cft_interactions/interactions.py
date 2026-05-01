@@ -8,9 +8,6 @@ author: maxwell.cook@colostate.edu
 from __future__ import annotations
 
 import json
-import multiprocessing as mp
-import os
-from concurrent.futures import ProcessPoolExecutor
 
 import geopandas as gpd
 import numpy as np
@@ -29,10 +26,33 @@ MIN_AREA_M2 = (30 * 30) / M2_TO_ACRES  # ~1 30 m pixel in m²
 THIN_TYPES    = {"Manual", "Mechanical"}
 BURNING_TYPES = {"Broadcast Burn"}
 
+TRT_PRIORITY = [
+    ("Mechanical", "Broadcast Burn"),
+    ("Manual", "Broadcast Burn"),
+    ("Broadcast Burn",),
+    ("Mechanical",),
+    ("Manual",),
+    ("Mastication",),
+    ("Removal",),
+    ("Pile Burn",),
+    ("Pile Fuels",),
+    ("Chipping",),
+    ("Mulching",),
+    ("Lop and Scatter",),
+]
+
+# Management group membership (Broadcast Burn spans both CANOPY and SURFACE)
+MGT_GROUPS: dict[str, set[str]] = {
+    "CANOPY":  {"Manual", "Mechanical", "Mastication", "Broadcast Burn"},
+    "SURFACE": {"Pile Fuels", "Removal", "Lop and Scatter", "Mulching",
+                "Pile Burn", "Broadcast Burn"},
+}
+
 # Attributes preserved from each source CFT polygon into EVENTS records
 EVENT_FIELDS = [
     "ACTIVITY", "YEAR_COMP", "AGENCY_C",
-    "FUND_SOURCE", "FUND_TYPE", "PARTNERS", "LANDOWNER", "MGT_TYPE",
+    "FUND_SOURCE", "FUND_TYPE", "PARTNERS",
+    "LANDOWNER", "MGT_TYPE",
 ]
 
 
@@ -59,7 +79,7 @@ def drop_slivers(
 
 def snap_to_network(
     gdf: gpd.GeoDataFrame,
-    tolerance: float = 0.5,
+    tolerance: float = 1,
 ) -> gpd.GeoDataFrame:
     """
     Snap all geometries to a shared boundary reference to suppress near-
@@ -87,7 +107,7 @@ def snap_to_network(
 
 def build_atomic_zones(
     gdf: gpd.GeoDataFrame,
-    snap_tolerance: float = 0.5,
+    snap_tolerance: float = 1,
     min_area_m2: float = MIN_AREA_M2,
 ) -> gpd.GeoDataFrame:
     """
@@ -174,60 +194,165 @@ def _is_complete(events: list[dict]) -> bool:
     return min(burn_yrs) >= min(thin_yrs)
 
 
-def _complete_type(events: list[dict]) -> str | None:
-    """Return the complete treatment label, or None."""
-    activities = {e.get("ACTIVITY") for e in events}
-    has_burn   = bool(activities & BURNING_TYPES)
-    has_mech   = "Mechanical" in activities
-    has_manual = "Manual" in activities
-
-    if not has_burn:
-        return None
-    if has_mech:
-        return "Mechanical + Broadcast Burn"
-    if has_manual:
-        return "Manual + Broadcast Burn"
-    return None
-
 
 def _pipe_set(values: list) -> str:
     """Sorted pipe-delimited set of non-null values."""
     return "|".join(sorted({str(v) for v in values if v is not None and str(v).strip()}))
 
 
-# ---------------------------------------------------------------------------
-# Parallel attribute aggregation
-# ---------------------------------------------------------------------------
+def _events_to_trt_years(events: list[dict]) -> dict[str, tuple]:
+    """Convert list of event dicts to {activity: (sorted unique years)} for label helpers."""
+    trt_years: dict[str, set] = {}
+    for e in events:
+        act = e.get("ACTIVITY")
+        yr  = e.get("YEAR_COMP")
+        if act and yr is not None:
+            trt_years.setdefault(act, set()).add(int(yr))
+    return {k: tuple(sorted(v)) for k, v in trt_years.items()}
 
-def _aggregate_atom_chunk(args: tuple) -> list[dict]:
+
+def _seq_trt_years(trt_years: dict) -> dict:
     """
-    Process a chunk of atomic zones — module-level so it is picklable
-    by multiprocessing across platforms (spawn / fork).
+    Enforce thin-before-burn for labeling.  If thinning occurred but the
+    earliest burn predates the earliest thin, Broadcast Burn is removed so
+    it cannot participate in combined canopy+fire labels.
 
-    Parameters (packed as a single tuple for executor.map compatibility)
+    Standalone burns (no thinning present) are unchanged — they remain a
+    valid treatment type on their own.
+    """
+    thin_yrs = [y for t in THIN_TYPES for y in trt_years.get(t, ())]
+    burn_yrs = list(trt_years.get("Broadcast Burn", ()))
+
+    if not thin_yrs or not burn_yrs:
+        return trt_years  # nothing to enforce
+
+    if min(burn_yrs) < min(thin_yrs):
+        return {k: v for k, v in trt_years.items() if k != "Broadcast Burn"}
+
+    return trt_years
+
+
+def _label_priority(trt_years: dict, priority: list) -> str:
+    """Assign TRT_EFF: highest-priority treatment type (or combo) present across all years."""
+    present = set(trt_years.keys())
+    if not present:
+        return "Unknown"
+    for combo in priority:
+        if all(t in present for t in combo):
+            return " + ".join(combo)
+    return " + ".join(sorted(present))
+
+
+def _trt_set(trt_years: dict, priority: list) -> str:
+    """All treatment types present, joined in priority order."""
+    if not trt_years:
+        return "Unknown"
+    present   = set(trt_years.keys())
+    ordered   = [combo[0] for combo in priority if len(combo) == 1 and combo[0] in present]
+    remainder = sorted(present - set(ordered))
+    return " + ".join(ordered + remainder)
+
+
+def _first_last_act(trt_years: dict, priority: list, which: str = "first") -> str | None:
+    """Activity type at the earliest ('first') or most recent ('last') year."""
+    if not trt_years:
+        return None
+    all_years      = [y for ys in trt_years.values() for y in ys]
+    boundary_year  = min(all_years) if which == "first" else max(all_years)
+    boundary_types = {t for t, ys in trt_years.items() if boundary_year in ys}
+    for combo in priority:
+        if len(combo) == 1 and combo[0] in boundary_types:
+            return combo[0]
+    return sorted(boundary_types)[0]
+
+
+def _last_thin_year(trt_years: dict, analysis_start: int = 2014) -> int | None:
+    """Most recent thinning year >= analysis_start, or None."""
+    thin_yrs = [
+        y for t in THIN_TYPES
+        for y in trt_years.get(t, ())
+        if y >= analysis_start
+    ]
+    return max(thin_yrs) if thin_yrs else None
+
+
+def _mgt_group_cols(seq_years: dict, trt_years: dict) -> dict[str, str | None]:
+    """
+    Pipe-delimited activity types present per management group, or None.
+
+    CANOPY uses seq_years (thin-before-burn enforced): Broadcast Burn only
+    appears here when it followed a thinning treatment.
+    SURFACE uses trt_years: Broadcast Burn always qualifies as surface.
+    """
+    sources = {"CANOPY": seq_years, "SURFACE": trt_years}
+    return {
+        group: ("|".join(sorted(act for act in sources[group] if act in members)) or None)
+        for group, members in MGT_GROUPS.items()
+    }
+
+
+# ---------------------------------------------------------------------------
+# Attribute aggregation
+# ---------------------------------------------------------------------------
+
+def aggregate_atom_attributes(
+    atomic_with_sources: gpd.GeoDataFrame,
+    gdf: gpd.GeoDataFrame,
+    source_id_col: str = "OBJECTID",
+) -> gpd.GeoDataFrame:
+    """
+    For each atomic zone, build event records from all overlapping source CFT
+    polygons and derive summary columns.
+
+    Uses explode → merge → groupby.apply rather than iterrows + process pool:
+    the vectorized merge eliminates the per-row dict lookup, and groupby
+    handles chunking in C, avoiding Python-level iteration over ~40k atoms.
+
+    Parameters
     ----------
-    chunk_df       : DataFrame slice of atomic_with_sources
-    src_lookup     : {OBJECTID: {field: value}} pre-built dict
-    present_fields : list of EVENT_FIELDS that exist in the source data
+    atomic_with_sources : output of assign_treatments_to_atoms()
+    gdf : original CFT GeoDataFrame with EVENT_FIELDS columns
+    source_id_col : str
+        Unique row identifier in gdf (default 'OBJECTID').
+
+    Returns
+    -------
+    GeoDataFrame with ATOM_ID, SOURCE_IDS (JSON), EVENTS (JSON), and
+    derived summary columns.
     """
-    chunk_df, src_lookup, present_fields = args
-    records = []
+    present_fields = [f for f in EVENT_FIELDS if f in gdf.columns]
 
-    for _, atom_row in chunk_df.iterrows():
-        source_ids = atom_row.get("SOURCE_IDS") or []
-        if not source_ids:
-            continue
+    # ── 1. Explode SOURCE_IDS list → long-form (one row per atom–source pair) ──
+    long = (
+        atomic_with_sources[["_atom_id", "SOURCE_IDS"]]
+        .explode("SOURCE_IDS")
+        .dropna(subset=["SOURCE_IDS"])
+        .copy()
+    )
+    long["SOURCE_IDS"] = long["SOURCE_IDS"].astype(int)
 
+    # ── 2. Merge source attributes — vectorized, no dict lookup ───────────────
+    attrs = gdf[[source_id_col] + present_fields].copy()
+    long  = long.merge(attrs, left_on="SOURCE_IDS", right_on=source_id_col, how="left")
+    if source_id_col in long.columns and source_id_col != "SOURCE_IDS":
+        long = long.drop(columns=[source_id_col])
+
+    # ── 3. Per-atom aggregation — groupby replaces iterrows + ProcessPoolExecutor
+    def _agg(grp: pd.DataFrame) -> pd.Series:
+        src_ids = sorted(grp["SOURCE_IDS"].tolist())
+
+        # to_dict("records") is much faster than iterrows for small per-atom groups
+        rec_df = grp[["SOURCE_IDS"] + present_fields].rename(
+            columns={"SOURCE_IDS": "SOURCE_ID"}
+        )
         events = []
-        for sid in source_ids:
-            src = src_lookup.get(int(sid), {})
-            event = {"SOURCE_ID": int(sid)}
-            for field in present_fields:
-                val = src.get(field)
-                # Normalise NaN → None for clean JSON serialisation
-                if val is None or (isinstance(val, float) and val != val):
-                    val = None
-                event[field] = val
+        for row in rec_df.to_dict("records"):
+            event = {}
+            for k, v in row.items():
+                try:
+                    event[k] = None if pd.isna(v) else v
+                except (TypeError, ValueError):
+                    event[k] = v  # non-scalar types (lists, dicts) pass through
             if "YEAR_COMP" in event and event["YEAR_COMP"] is not None:
                 try:
                     event["YEAR_COMP"] = int(event["YEAR_COMP"])
@@ -235,96 +360,52 @@ def _aggregate_atom_chunk(args: tuple) -> list[dict]:
                     event["YEAR_COMP"] = None
             events.append(event)
 
-        all_years      = [e["YEAR_COMP"] for e in events if e.get("YEAR_COMP") is not None]
-        trt_activities = sorted({e["ACTIVITY"] for e in events if e.get("ACTIVITY")})
-        complete       = _is_complete(events)
-        c_type         = _complete_type(events) if complete else None
+        all_years = [e["YEAR_COMP"] for e in events if e.get("YEAR_COMP") is not None]
+        # Full dict: all activities (SURFACE, LAST_THIN, TRT_ACTIVITIES)
+        trt_years = _events_to_trt_years(events)
+        # Sequence-enforced dict: Broadcast Burn excluded when burn predated thin
+        # (TRT_EFF, TRT_SET, FIRST/LAST_TRT, CANOPY)
+        seq_years = _seq_trt_years(trt_years)
+        mgt_cols  = _mgt_group_cols(seq_years, trt_years)
 
-        records.append({
-            "_atom_id":       atom_row["_atom_id"],
-            "SOURCE_IDS":     json.dumps(source_ids),
+        return pd.Series({
+            "SOURCE_IDS":     json.dumps(src_ids),
             "EVENTS":         json.dumps(events),
             "N_EVENTS":       len(events),
-            "TRT_ACTIVITIES": "|".join(trt_activities),
+            "TRT_ACTIVITIES": _trt_set(trt_years, TRT_PRIORITY).replace(" + ", "|"),
+            "TRT_EFF":        _label_priority(seq_years, TRT_PRIORITY),
+            "TRT_SET":        _trt_set(seq_years, TRT_PRIORITY),
+            "FIRST_TRT":      _first_last_act(seq_years, TRT_PRIORITY, "first"),
+            "LAST_TRT":       _first_last_act(seq_years, TRT_PRIORITY, "last"),
             "FIRST_TRT_YEAR": int(min(all_years)) if all_years else None,
             "LAST_TRT_YEAR":  int(max(all_years)) if all_years else None,
-            "COMPLETE":       complete,
-            "COMPLETE_TYPE":  c_type,
+            "COMPLETE":       _is_complete(events),
+            "LAST_THIN":      _last_thin_year(trt_years),
+            "CANOPY":         mgt_cols["CANOPY"],
+            "SURFACE":        mgt_cols["SURFACE"],
             "AGENCIES":       _pipe_set([e.get("AGENCY_C")   for e in events]),
             "FUND_SOURCES":   _pipe_set([e.get("FUND_SOURCE") for e in events]),
-            "geometry":       atom_row["geometry"],
         })
 
-    return records
+    agg = long.groupby("_atom_id", sort=False).apply(_agg, include_groups=False)
 
-
-def aggregate_atom_attributes(
-    atomic_with_sources: gpd.GeoDataFrame,
-    gdf: gpd.GeoDataFrame,
-    source_id_col: str = "OBJECTID",
-    n_workers: int | None = None,
-) -> gpd.GeoDataFrame:
-    """
-    For each atomic zone, build a list of event records from all source CFT
-    polygons that cover it. Derives summary columns from the merged events.
-
-    Parallelises across *n_workers* processes by splitting the atom table
-    into equal chunks. Each worker receives a pre-built plain-dict lookup
-    (fast to pickle, avoids per-row DataFrame indexing overhead).
-
-    Parameters
-    ----------
-    atomic_with_sources : output of assign_treatments_to_atoms()
-    gdf : original CFT GeoDataFrame (unflagged, with EVENT_FIELDS columns)
-    source_id_col : str
-        Column in gdf that matches SOURCE_IDS (default 'OBJECTID').
-    n_workers : int, optional
-        Number of parallel worker processes. Defaults to cpu_count - 1.
-        Pass 1 to run sequentially (useful for debugging).
-
-    Returns
-    -------
-    GeoDataFrame with ATOM_ID, SOURCE_IDS (JSON), EVENTS (JSON), and
-    derived summary columns. See module docstring for full schema.
-    """
-    if n_workers is None:
-        n_workers = max(1, (os.cpu_count() or 2) - 1)
-
-    present_fields = [f for f in EVENT_FIELDS if f in gdf.columns]
-
-    # Build a plain-dict lookup: {OBJECTID: {field: value}}
-    # Plain dict is far faster to pickle and index than a DataFrame.
-    attr_df = gdf.set_index(source_id_col)[present_fields]
-    src_lookup = {
-        int(idx): row.to_dict()
-        for idx, row in attr_df.iterrows()
-    }
-
-    # Split atom table into chunks — one per worker.
-    # np.array_split on a GeoDataFrame triggers __array__ and returns ndarrays,
-    # so split integer indices instead and use iloc to get proper GDF slices.
-    idx_chunks = np.array_split(np.arange(len(atomic_with_sources)), n_workers)
-    chunks = [atomic_with_sources.iloc[idx] for idx in idx_chunks if len(idx) > 0]
-    args   = [(chunk, src_lookup, present_fields) for chunk in chunks]
-
-    if n_workers == 1:
-        all_records = _aggregate_atom_chunk(args[0])
-    else:
-        # ProcessPoolExecutor works on both fork (Linux) and spawn (macOS/Win)
-        # because _aggregate_atom_chunk is a module-level function.
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            results = list(executor.map(_aggregate_atom_chunk, args))
-        all_records = [r for chunk_result in results for r in chunk_result]
-
-    result = gpd.GeoDataFrame(all_records, geometry="geometry", crs=atomic_with_sources.crs)
+    # ── 4. Re-attach geometry ─────────────────────────────────────────────────
+    geom_idx = atomic_with_sources.set_index("_atom_id")["geometry"]
+    result = gpd.GeoDataFrame(
+        agg.join(geom_idx), geometry="geometry", crs=atomic_with_sources.crs
+    )
+    result = result.reset_index(drop=True)
     result["ATOM_ID"]   = result.index + 1
     result["ACRES_GIS"] = result.geometry.area * M2_TO_ACRES
 
     cols = [
         "ATOM_ID", "SOURCE_IDS", "EVENTS",
         "N_EVENTS", "TRT_ACTIVITIES",
+        "TRT_EFF", "TRT_SET",
+        "FIRST_TRT", "LAST_TRT",
         "FIRST_TRT_YEAR", "LAST_TRT_YEAR",
-        "COMPLETE", "COMPLETE_TYPE",
+        "COMPLETE", "LAST_THIN",
+        "CANOPY", "SURFACE",
         "AGENCIES", "FUND_SOURCES",
         "ACRES_GIS", "geometry",
     ]
@@ -353,7 +434,6 @@ def build_treatment_interactions(
     snap_tolerance: float = 0.5,
     min_acres: float = 0.11,
     target_crs: int = 26913,
-    n_workers: int | None = None,
 ) -> gpd.GeoDataFrame:
     """
     Full pipeline: clean CFT polygons → non-overlapping atomic treatment
@@ -377,10 +457,6 @@ def build_treatment_interactions(
         Sliver filter threshold in acres (default 0.11 ac ≈ ½ pixel).
     target_crs : int
         EPSG code for all distance operations (default NAD83 UTM 13N).
-    n_workers : int, optional
-        Worker processes for attribute aggregation. Defaults to cpu_count - 1.
-        Pass 1 to disable parallelism (useful for debugging in notebooks).
-
     Returns
     -------
     GeoDataFrame in the original CRS of cft_clean.
@@ -400,13 +476,12 @@ def build_treatment_interactions(
     atomic_src = assign_treatments_to_atoms(atomic, gdf, source_id_col)
 
     # Step 3 — aggregate full event records + derive summary fields (parallel)
-    result = aggregate_atom_attributes(atomic_src, gdf, source_id_col, n_workers=n_workers)
+    result = aggregate_atom_attributes(atomic_src, gdf, source_id_col)
     result = drop_slivers(result, min_area_m2)
     print(f"Final features:  {len(result):,}")
 
     n_complete = result["COMPLETE"].sum()
     print(f"Complete (thin+burn): {n_complete:,}  ({n_complete/len(result)*100:.1f}%)")
-    if result["COMPLETE_TYPE"].notna().any():
-        print(result["COMPLETE_TYPE"].value_counts().to_string())
+    print(f"\nTRT_EFF distribution:\n{result['TRT_EFF'].value_counts().to_string()}")
 
     return result.to_crs(original_crs)

@@ -47,6 +47,8 @@ from .interactions import (
     snap_to_network,
     THIN_TYPES,
     BURNING_TYPES,
+    TRT_PRIORITY,
+    MGT_GROUPS,
     EVENT_FIELDS,
 )
 
@@ -68,7 +70,7 @@ __all__ = [
     "build_treatment_interactions",
     "build_atomic_zones", "assign_treatments_to_atoms", "aggregate_atom_attributes",
     "make_valid_gdf", "drop_slivers", "snap_to_network",
-    "THIN_TYPES", "BURNING_TYPES", "EVENT_FIELDS",
+    "THIN_TYPES", "BURNING_TYPES", "TRT_PRIORITY", "MGT_GROUPS", "EVENT_FIELDS",
     # helpers
     "events_to_rows", "extract_field",
     "filter_by_activity", "filter_by_year_range", "filter_complete",

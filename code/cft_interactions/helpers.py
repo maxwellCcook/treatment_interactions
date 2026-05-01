@@ -171,7 +171,7 @@ def filter_by_year_range(
 
 def filter_complete(
     gdf: gpd.GeoDataFrame,
-    complete_type: str | None = None,
+    trt_eff: str | None = None,
 ) -> gpd.GeoDataFrame:
     """
     Keep only atoms with COMPLETE == True.
@@ -179,15 +179,15 @@ def filter_complete(
     Parameters
     ----------
     gdf : GeoDataFrame
-    complete_type : str, optional
-        If provided, further filter to a specific COMPLETE_TYPE string
+    trt_eff : str, optional
+        If provided, further filter to a specific TRT_EFF value
         (e.g., 'Mechanical + Broadcast Burn').
 
     Returns
     -------
     GeoDataFrame — filtered copy.
     """
-    out = gdf[gdf["COMPLETE"] == True].copy()
-    if complete_type is not None:
-        out = out[out["COMPLETE_TYPE"] == complete_type].copy()
+    out = gdf[gdf["COMPLETE"]].copy()
+    if trt_eff is not None:
+        out = out[out["TRT_EFF"] == trt_eff].copy()
     return out
