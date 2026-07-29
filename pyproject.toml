@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "treatment_interactions"
+version = "0.1.0"
+description = "Treatment interactions database — atomic decomposition of multi-source treatment polygons (CFT v2.0, TWIG) into a non-overlapping interactions layer."
+requires-python = ">=3.10"
+authors = [{ name = "Maxwell C. Cook", email = "maxwell.cook@colostate.edu" }]
+dependencies = [
+    "geopandas",
+    "pandas",
+    "numpy",
+    "shapely",
+    "requests",
+    "scipy",
+    "matplotlib",
+]
+
+[tool.setuptools]
+package-dir = { "" = "code" }
+
+[tool.setuptools.packages.find]
+where = ["code"]
+include = ["treatment_interactions*"]
+
+[tool.setuptools.package-data]
+treatment_interactions = ["data/*.csv"]

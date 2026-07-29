@@ -1,2 +1,8 @@
 data/spatial
 docs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.DS_Store

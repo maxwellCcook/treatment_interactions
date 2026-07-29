@@ -21,7 +21,7 @@ from shapely.ops import polygonize, unary_union
 # ---------------------------------------------------------------------------
 
 M2_TO_ACRES = 0.000247105
-MIN_AREA_M2 = (30 * 30) / M2_TO_ACRES  # ~1 30 m pixel in m²
+MIN_AREA_M2 = 30 * 30  # 900 m² ≈ one 30 m pixel (~0.22 ac)
 
 THIN_TYPES    = {"Manual", "Mechanical"}
 BURNING_TYPES = {"Broadcast Burn"}
@@ -82,17 +82,27 @@ def snap_to_network(
     tolerance: float = 1,
 ) -> gpd.GeoDataFrame:
     """
-    Snap all geometries to a shared boundary reference to suppress near-
-    identical boundary drift before atomic decomposition. Snapping to the
-    full unary_union boundary forces all vertices toward the same shared
-    edge set, which is more stable than pairwise snapping at n=40k+.
+    Align near-coincident polygon boundaries before atomic decomposition by
+    snapping every vertex to a shared precision grid.
 
-    Uses Shapely 2.0's vectorized snap/make_valid (no Python-level loop).
+    Collapsing all coordinates onto one grid (Shapely 2.0's vectorized
+    ``set_precision``) forces coincident-but-drifting boundaries from
+    different source polygons onto identical coordinates — which is what
+    ``polygonize`` needs to produce clean, shared atomic edges.
+
+    This replaces an earlier snap-to-unioned-boundary approach
+    (``shapely.snap(geoms, unary_union(geoms), tol)``) that was effectively
+    O(n × |union|) and stopped scaling past a few thousand polygons.
+
+    Parameters
+    ----------
+    tolerance : float
+        Precision grid size in map units (metres). Vertices are snapped to
+        this grid; boundaries closer than ``tolerance`` become coincident.
     """
     gdf = make_valid_gdf(gdf)
-    reference = unary_union(gdf.geometry)
 
-    snapped = shapely.snap(gdf.geometry.values, reference, tolerance)
+    snapped = shapely.set_precision(gdf.geometry.values, tolerance)
     snapped = shapely.make_valid(snapped)
 
     out = gdf.copy()
@@ -179,25 +189,23 @@ def assign_treatments_to_atoms(
 # Attribute derivation helpers
 # ---------------------------------------------------------------------------
 
-def _is_complete(events: list[dict]) -> bool:
-    """True if a burn followed (or co-occurred with) a thin in this atom."""
-    thin_yrs = [
-        e["YEAR_COMP"] for e in events
-        if e.get("ACTIVITY") in THIN_TYPES and e.get("YEAR_COMP") is not None
-    ]
-    burn_yrs = [
-        e["YEAR_COMP"] for e in events
-        if e.get("ACTIVITY") in BURNING_TYPES and e.get("YEAR_COMP") is not None
-    ]
-    if not thin_yrs or not burn_yrs:
-        return False
-    return min(burn_yrs) >= min(thin_yrs)
+def _is_complete(trt_years: dict) -> bool:
+    """
+    True if this atom received both a thinning and a broadcast burn.
+
+    Presence-based, not sequence-based: YEAR_COMP is annual, so within-year
+    ordering is unknowable, and burn/thin/re-burn units are common. An atom
+    treated by both methods is a complete treatment regardless of the order
+    the records happen to carry.
+    """
+    present = set(trt_years)
+    return bool(present & THIN_TYPES) and bool(present & BURNING_TYPES)
 
 
 
 def _pipe_set(values: list) -> str:
-    """Sorted pipe-delimited set of non-null values."""
-    return "|".join(sorted({str(v) for v in values if v is not None and str(v).strip()}))
+    """Sorted pipe-delimited set of non-null, whitespace-stripped values."""
+    return "|".join(sorted({str(v).strip() for v in values if v is not None and str(v).strip()}))
 
 
 def _events_to_trt_years(events: list[dict]) -> dict[str, tuple]:
@@ -209,27 +217,6 @@ def _events_to_trt_years(events: list[dict]) -> dict[str, tuple]:
         if act and yr is not None:
             trt_years.setdefault(act, set()).add(int(yr))
     return {k: tuple(sorted(v)) for k, v in trt_years.items()}
-
-
-def _seq_trt_years(trt_years: dict) -> dict:
-    """
-    Enforce thin-before-burn for labeling.  If thinning occurred but the
-    earliest burn predates the earliest thin, Broadcast Burn is removed so
-    it cannot participate in combined canopy+fire labels.
-
-    Standalone burns (no thinning present) are unchanged — they remain a
-    valid treatment type on their own.
-    """
-    thin_yrs = [y for t in THIN_TYPES for y in trt_years.get(t, ())]
-    burn_yrs = list(trt_years.get("Broadcast Burn", ()))
-
-    if not thin_yrs or not burn_yrs:
-        return trt_years  # nothing to enforce
-
-    if min(burn_yrs) < min(thin_yrs):
-        return {k: v for k, v in trt_years.items() if k != "Broadcast Burn"}
-
-    return trt_years
 
 
 def _label_priority(trt_years: dict, priority: list) -> str:
@@ -276,17 +263,15 @@ def _last_thin_year(trt_years: dict, analysis_start: int = 2014) -> int | None:
     return max(thin_yrs) if thin_yrs else None
 
 
-def _mgt_group_cols(seq_years: dict, trt_years: dict) -> dict[str, str | None]:
+def _mgt_group_cols(trt_years: dict) -> dict[str, str | None]:
     """
     Pipe-delimited activity types present per management group, or None.
 
-    CANOPY uses seq_years (thin-before-burn enforced): Broadcast Burn only
-    appears here when it followed a thinning treatment.
-    SURFACE uses trt_years: Broadcast Burn always qualifies as surface.
+    Broadcast Burn is a member of both groups, so it appears in CANOPY and
+    SURFACE whenever the atom was burned.
     """
-    sources = {"CANOPY": seq_years, "SURFACE": trt_years}
     return {
-        group: ("|".join(sorted(act for act in sources[group] if act in members)) or None)
+        group: ("|".join(sorted(act for act in trt_years if act in members)) or None)
         for group, members in MGT_GROUPS.items()
     }
 
@@ -299,6 +284,8 @@ def aggregate_atom_attributes(
     atomic_with_sources: gpd.GeoDataFrame,
     gdf: gpd.GeoDataFrame,
     source_id_col: str = "OBJECTID",
+    extra_event_fields: list[str] | None = None,
+    event_dedupe=None,
 ) -> gpd.GeoDataFrame:
     """
     For each atomic zone, build event records from all overlapping source CFT
@@ -314,13 +301,30 @@ def aggregate_atom_attributes(
     gdf : original CFT GeoDataFrame with EVENT_FIELDS columns
     source_id_col : str
         Unique row identifier in gdf (default 'OBJECTID').
+    extra_event_fields : list[str], optional
+        Additional source-GDF columns to carry into each per-event dict in
+        the EVENTS JSON (e.g. ['PROJECT_NAME', 'MGT_REGION']). Unknown column
+        names are skipped with a warning.
+    event_dedupe : callable, optional
+        ``events -> events`` hook applied to each atom's event list **before** the
+        derived columns (TRT_SET, TRT_EFF, COMPLETE, CANOPY/SURFACE, year bounds)
+        are computed. Used to reconcile cross-source duplicate events for a
+        multi-source (CFT+TWIG) build — see
+        :func:`treatment_interactions.reconcile.dedupe_events`. Default ``None`` leaves
+        the event list untouched (a CFT-only statewide run is unaffected).
 
     Returns
     -------
     GeoDataFrame with ATOM_ID, SOURCE_IDS (JSON), EVENTS (JSON), and
     derived summary columns.
     """
-    present_fields = [f for f in EVENT_FIELDS if f in gdf.columns]
+    requested = list(EVENT_FIELDS) + list(extra_event_fields or [])
+    seen: set[str] = set()
+    requested = [f for f in requested if not (f in seen or seen.add(f))]
+    present_fields = [f for f in requested if f in gdf.columns]
+    missing = [f for f in (extra_event_fields or []) if f not in gdf.columns]
+    if missing:
+        print(f"[warn] extra_event_fields not in source GDF, skipped: {missing}")
 
     # ── 1. Explode SOURCE_IDS list → long-form (one row per atom–source pair) ──
     long = (
@@ -360,26 +364,25 @@ def aggregate_atom_attributes(
                     event["YEAR_COMP"] = None
             events.append(event)
 
+        if event_dedupe is not None:
+            events = event_dedupe(events)
+
         all_years = [e["YEAR_COMP"] for e in events if e.get("YEAR_COMP") is not None]
-        # Full dict: all activities (SURFACE, LAST_THIN, TRT_ACTIVITIES)
         trt_years = _events_to_trt_years(events)
-        # Sequence-enforced dict: Broadcast Burn excluded when burn predated thin
-        # (TRT_EFF, TRT_SET, FIRST/LAST_TRT, CANOPY)
-        seq_years = _seq_trt_years(trt_years)
-        mgt_cols  = _mgt_group_cols(seq_years, trt_years)
+        mgt_cols  = _mgt_group_cols(trt_years)
 
         return pd.Series({
             "SOURCE_IDS":     json.dumps(src_ids),
             "EVENTS":         json.dumps(events),
             "N_EVENTS":       len(events),
             "TRT_ACTIVITIES": _trt_set(trt_years, TRT_PRIORITY).replace(" + ", "|"),
-            "TRT_EFF":        _label_priority(seq_years, TRT_PRIORITY),
-            "TRT_SET":        _trt_set(seq_years, TRT_PRIORITY),
-            "FIRST_TRT":      _first_last_act(seq_years, TRT_PRIORITY, "first"),
-            "LAST_TRT":       _first_last_act(seq_years, TRT_PRIORITY, "last"),
+            "TRT_EFF":        _label_priority(trt_years, TRT_PRIORITY),
+            "TRT_SET":        _trt_set(trt_years, TRT_PRIORITY),
+            "FIRST_TRT":      _first_last_act(trt_years, TRT_PRIORITY, "first"),
+            "LAST_TRT":       _first_last_act(trt_years, TRT_PRIORITY, "last"),
             "FIRST_TRT_YEAR": int(min(all_years)) if all_years else None,
             "LAST_TRT_YEAR":  int(max(all_years)) if all_years else None,
-            "COMPLETE":       _is_complete(events),
+            "COMPLETE":       _is_complete(trt_years),
             "LAST_THIN":      _last_thin_year(trt_years),
             "CANOPY":         mgt_cols["CANOPY"],
             "SURFACE":        mgt_cols["SURFACE"],
@@ -394,6 +397,125 @@ def aggregate_atom_attributes(
     result = gpd.GeoDataFrame(
         agg.join(geom_idx), geometry="geometry", crs=atomic_with_sources.crs
     )
+    result = result.reset_index(drop=True)
+    result["ATOM_ID"]   = result.index + 1
+    result["ACRES_GIS"] = result.geometry.area * M2_TO_ACRES
+
+    cols = [
+        "ATOM_ID", "SOURCE_IDS", "EVENTS",
+        "N_EVENTS", "TRT_ACTIVITIES",
+        "TRT_EFF", "TRT_SET",
+        "FIRST_TRT", "LAST_TRT",
+        "FIRST_TRT_YEAR", "LAST_TRT_YEAR",
+        "COMPLETE", "LAST_THIN",
+        "CANOPY", "SURFACE",
+        "AGENCIES", "FUND_SOURCES",
+        "ACRES_GIS", "geometry",
+    ]
+    return result[cols].reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# Duplicate-atom merge
+# ---------------------------------------------------------------------------
+
+# Attribute columns that define atom identity for merge_duplicate_atoms().
+# FUND_SOURCES is deliberately excluded: CFT and TWIG use different funding-
+# source vocabularies for the same program (e.g. TWIG 'BIL' vs CFT
+# 'Bipartisan Infrastructure Law (BIL)'), so requiring it to match would leave
+# otherwise-identical adjacent atoms unmerged. SOURCE_IDS/EVENTS/N_EVENTS/
+# ATOM_ID/ACRES_GIS are excluded too — they're recomputed after the merge.
+DISSOLVE_KEY = [
+    "TRT_ACTIVITIES", "TRT_EFF", "TRT_SET",
+    "FIRST_TRT", "LAST_TRT", "FIRST_TRT_YEAR", "LAST_TRT_YEAR",
+    "COMPLETE", "LAST_THIN", "CANOPY", "SURFACE", "AGENCIES",
+]
+
+
+def merge_duplicate_atoms(
+    atoms: gpd.GeoDataFrame,
+    key_cols: list[str] | None = None,
+) -> gpd.GeoDataFrame:
+    """
+    Merge geometrically adjacent atoms that share identical derived attributes
+    into a single polygon and regenerate ATOM_ID.
+
+    build_atomic_zones() partitions on raw geometry boundaries only, so a
+    boundary between (e.g.) a CFT-sourced and a TWIG-sourced record can leave
+    two attribute-identical atoms side by side — visible as thin slivers.
+    Dissolving on ``key_cols`` and exploding back to contiguous parts merges
+    those pairs while leaving non-adjacent atoms that happen to share the same
+    key separate.
+
+    SOURCE_IDS and EVENTS are unioned (not dropped) across every atom that
+    feeds into a merged polygon, so provenance back to the original CFT/TWIG
+    records is fully preserved. FUND_SOURCES is re-derived via ``_pipe_set()``
+    over the unioned events rather than used as part of the merge key, so a
+    funding-source label difference never blocks a merge.
+
+    Uses a representative-point spatial rejoin against the dissolved geometry
+    (mirroring ``assign_treatments_to_atoms()``) rather than ``dissolve()``'s
+    built-in ``aggfunc``, since the latter would aggregate SOURCE_IDS/EVENTS
+    across *every* atom sharing a key statewide, not just the spatially
+    contiguous ones actually being merged.
+
+    Parameters
+    ----------
+    atoms : output of aggregate_atom_attributes()
+    key_cols : list[str], optional
+        Attribute columns that define atom identity (default DISSOLVE_KEY).
+
+    Returns
+    -------
+    GeoDataFrame with the same columns/order as aggregate_atom_attributes(),
+    ATOM_ID and ACRES_GIS regenerated.
+    """
+    key_cols = list(key_cols or DISSOLVE_KEY)
+
+    # ── 1. Dissolve by attribute key, explode back to contiguous parts ────────
+    #      dropna=False: several key columns (SURFACE, LAST_THIN, ...) are
+    #      legitimately None for many atoms (e.g. a canopy-only atom has no
+    #      SURFACE label) — the groupby default would silently drop every atom
+    #      with any null key column instead of grouping them together.
+    merged = (
+        atoms[key_cols + ["geometry"]]
+        .dissolve(by=key_cols, dropna=False)
+        .explode(index_parts=False)
+        .reset_index()
+    )
+    merged = merged.reset_index(drop=True)
+    merged["_merge_id"] = merged.index
+
+    # ── 2. Re-derive SOURCE_IDS / EVENTS / N_EVENTS / FUND_SOURCES per merged
+    #      polygon by rejoining the original atoms (safe: each original atom's
+    #      geometry is a strict subset of its merged group's unioned geometry).
+    pts = atoms.copy()
+    pts["geometry"] = atoms.geometry.representative_point()
+    joined = gpd.sjoin(
+        pts[["SOURCE_IDS", "EVENTS", "geometry"]],
+        merged[["_merge_id", "geometry"]],
+        how="left",
+        predicate="within",
+    )
+
+    def _union(grp: pd.DataFrame) -> pd.Series:
+        src_ids = sorted({sid for s in grp["SOURCE_IDS"] for sid in json.loads(s)})
+        events  = [e for s in grp["EVENTS"] for e in json.loads(s)]
+        return pd.Series({
+            "SOURCE_IDS":   json.dumps(src_ids),
+            "EVENTS":       json.dumps(events),
+            "N_EVENTS":     len(events),
+            "FUND_SOURCES": _pipe_set([e.get("FUND_SOURCE") for e in events]),
+        })
+
+    agg = (
+        joined.groupby("_merge_id")[["SOURCE_IDS", "EVENTS"]]
+        .apply(_union, include_groups=False)
+        .reset_index()
+    )
+
+    # ── 3. Reassemble, regenerate ATOM_ID / ACRES_GIS ──────────────────────────
+    result = merged.merge(agg, on="_merge_id", how="left").drop(columns="_merge_id")
     result = result.reset_index(drop=True)
     result["ATOM_ID"]   = result.index + 1
     result["ACRES_GIS"] = result.geometry.area * M2_TO_ACRES
@@ -434,6 +556,8 @@ def build_treatment_interactions(
     snap_tolerance: float = 0.5,
     min_acres: float = 0.11,
     target_crs: int = 26913,
+    extra_event_fields: list[str] | None = None,
+    event_dedupe=None,
 ) -> gpd.GeoDataFrame:
     """
     Full pipeline: clean CFT polygons → non-overlapping atomic treatment
@@ -441,8 +565,8 @@ def build_treatment_interactions(
 
     Replaces the multi-tier geometry match and erase-and-stamp approach
     with a topologically clean atomic decomposition. Complete treatment
-    identification (thin → burn) is derived from event attributes rather
-    than spatial overlay.
+    identification (thin + broadcast burn, in any order) is derived from
+    event attributes rather than spatial overlay.
 
     Parameters
     ----------
@@ -457,6 +581,13 @@ def build_treatment_interactions(
         Sliver filter threshold in acres (default 0.11 ac ≈ ½ pixel).
     target_crs : int
         EPSG code for all distance operations (default NAD83 UTM 13N).
+    extra_event_fields : list[str], optional
+        Additional source-GDF columns to carry into each per-event dict in
+        the EVENTS JSON (e.g. ['PROJECT_NAME', 'MGT_REGION']).
+    event_dedupe : callable, optional
+        ``events -> events`` hook to reconcile cross-source duplicate events per
+        atom (e.g. ``treatment_interactions.reconcile.make_event_deduper(cft_window=…)``
+        for a CFT+TWIG build). Default None = no reconciliation.
     Returns
     -------
     GeoDataFrame in the original CRS of cft_clean.
@@ -476,7 +607,17 @@ def build_treatment_interactions(
     atomic_src = assign_treatments_to_atoms(atomic, gdf, source_id_col)
 
     # Step 3 — aggregate full event records + derive summary fields (parallel)
-    result = aggregate_atom_attributes(atomic_src, gdf, source_id_col)
+    result = aggregate_atom_attributes(
+        atomic_src, gdf, source_id_col, extra_event_fields, event_dedupe=event_dedupe,
+    )
+
+    # Step 4 — merge geometrically adjacent atoms with identical derived attributes
+    # (before the final sliver filter, so a thin boundary sliver gets absorbed into
+    # its identical-attribute neighbor instead of being independently dropped)
+    n_before = len(result)
+    result = merge_duplicate_atoms(result)
+    print(f"Merged duplicate atoms: {n_before:,} -> {len(result):,}")
+
     result = drop_slivers(result, min_area_m2)
     print(f"Final features:  {len(result):,}")
 
