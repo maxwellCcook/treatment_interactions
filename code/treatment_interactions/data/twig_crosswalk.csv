@@ -1,0 +1,126 @@
+field,value,activity,effect,confidence,note
+type,Thinning,Thin,canopy,high,Generic thin; split into Manual/Mechanical by classify_thin (equipment/method).
+type,Broadcast,Broadcast Burn,canopy,high,NCFC type_crosswalk.
+type,Broadcast Burn,Broadcast Burn,canopy,high,NCFC type_crosswalk.
+type,Mastication,Mastication,canopy,high,NCFC type_crosswalk.
+type,"Grinding, Chipping, Crushing",Mastication,canopy,high,NCFC type_crosswalk.
+type,Crushing,Mastication,canopy,medium,Crushing/compaction of the fuel bed; treated as mastication surface bed (see 00b Fuel Compaction).
+type,Fuel Compaction,Mastication,canopy,medium,NCFC type_crosswalk mapped Fuel Compaction to Mastication.
+type,Chipping,Mastication,canopy,medium,NCFC 00b type_crosswalk maps type Chipping to Mastication (note: activity Chipping of Fuels is surface).
+type,Machine Pile,Pile Fuels,surface,high,NCFC type_crosswalk.
+type,Hand Pile,Pile Fuels,surface,high,NCFC type_crosswalk.
+type,Pile,Pile Fuels,surface,high,NCFC type_crosswalk.
+type,Machine Pile Burn,Pile Burn,surface,high,NCFC type_crosswalk.
+type,Hand Pile Burn,Pile Burn,surface,high,NCFC type_crosswalk.
+type,Pile Burn,Pile Burn,surface,high,NCFC type_crosswalk.
+type,Jackpot Burn,Pile Burn,surface,medium,Jackpot burning consumes scattered fuel concentrations; closer to pile than broadcast burning.
+type,Lop and Scatter,Lop and Scatter,surface,high,NCFC type_crosswalk.
+type,Biomass Removal,Removal,surface,medium,"Coarse label; when activity indicates a cut (clearcut/shelterwood), the canopy-wins rule promotes it to a thin."
+type,Mowing,DROP,none,high,Non-forest / non-fuels; excluded (NCFC rm_types).
+type,Grazing,DROP,none,high,Non-forest / non-fuels; excluded (NCFC rm_types).
+type,Biological,DROP,none,high,Non-fuels biological control; excluded (NCFC rm_types).
+type,Chemical,DROP,none,high,Herbicide/chemical; excluded (NCFC rm_types).
+type,Chemical Treatment - Herbicide,DROP,none,high,Herbicide; excluded (NCFC rm_types).
+type,Herbicide,DROP,none,high,Herbicide; excluded (NCFC rm_types).
+type,Planting,DROP,none,high,Reforestation planting; not a fuels treatment (NCFC rm_types).
+type,Seeding,DROP,none,high,Seeding; not a fuels treatment.
+activity,Thinning for Hazardous Fuels Reduction,Thin,canopy,high,Generic thin; split by classify_thin (method/equipment). TWIG 'method' is predominantly Manual for these — do NOT hardcode Mechanical.
+activity,Precommercial Thin,Thin,canopy,high,Generic (often hand/chainsaw) thin; split by classify_thin. TWIG 'method' is predominantly Manual (1259 vs 65 mechanical in NCFC).
+activity,Precommercial thinning for visual,Thin,canopy,high,Generic thin; split by classify_thin (method/equipment).
+activity,Wildlife Habitat Precommercial thinning,Thin,canopy,high,Precommercial thin (wildlife objective); split by classify_thin.
+activity,Commercial Thin,Thin,canopy,high,Commercial thin; split by classify_thin.
+activity,Stand Clearcut (EA/RH/FH),Mechanical,canopy,high,NCFC activity_map.
+activity,Stand Clearcut (w/ leave trees) (EA/RH/FH),Mechanical,canopy,high,NCFC activity_map.
+activity,Patch Clearcut (EA/RH/FH),Mechanical,canopy,high,NCFC activity_map.
+activity,Patch Clearcut (w/ leave trees) (EA/RH/FH),Mechanical,canopy,high,Clearcut variant (matches Stand/Patch Clearcut).
+activity,Two-aged Patch Clearcut (w/res) (2A/RH/FH),Mechanical,canopy,high,Two-aged clearcut regeneration cut.
+activity,Harvest Without Restocking,Mechanical,canopy,high,NCFC activity_map.
+activity,Permanent Land Clearing,Mechanical,canopy,high,NCFC activity_map.
+activity,Fuel Break,Mechanical,canopy,high,NCFC activity_map.
+activity,"Salvage Cut (intermediate treatment, not regeneration)",Mechanical,canopy,high,NCFC activity_map.
+activity,Landing Treated - Area Mitigated,Mechanical,canopy,medium,NCFC activity_map.
+activity,Recreation Removal of hazard trees and snags - Area,Mechanical,canopy,medium,NCFC activity_map (hazard-tree removal).
+activity,Site Preparation for Natural Regeneration - Mechanical,Mechanical,canopy,low,Mechanical (Dozer) site prep; canopy-wins recovers it rather than dropping. Review: post-harvest ground prep.
+activity,Site Preparation for Planting - Mechanical,Mechanical,canopy,low,Mechanical (Dozer) site prep; canopy-wins recovers it rather than dropping. Review: post-harvest ground prep.
+activity,Group Selection Method (UA/RH/FH),Manual,canopy,high,NCFC activity_map.
+activity,Single Tree Selection Method (UA/RH/FH),Manual,canopy,high,Uneven-aged single-tree selection; manual-style partial cut.
+activity,Overstory Removal Cut (from advanced regeneration) (EA/RH/FH),Manual,canopy,medium,NCFC activity_map.
+activity,Special Products Removal,Manual,canopy,medium,NCFC activity_map.
+activity,Sanitation Cut,Manual,canopy,medium,NCFC activity_map.
+activity,Improvement Cut,Manual,canopy,medium,NCFC activity_map.
+activity,Other Stand Tending,Manual,canopy,low,Generic stand tending; treated as a light manual canopy treatment.
+activity,Prune,Manual,canopy,low,NCFC activity_map (pruning to raise canopy base height).
+activity,Pruning to Raise Canopy Height and Discourage Crown Fire,Manual,canopy,medium,Pruning for crown-fire mitigation; manual canopy treatment.
+activity,Slashing - Pre-Site Preparation,Manual,canopy,medium,NCFC activity_map.
+activity,Wildlife Habitat Regeneration cut,Mechanical,canopy,medium,Regeneration cut (wildlife objective).
+activity,Seed-tree Seed Cut (with and without leave trees) (EA/RH/NFH),Mechanical,canopy,medium,Seed-tree regeneration cut.
+activity,Seed-tree Final Cut (EA/NRH/FH),Mechanical,canopy,medium,Seed-tree final removal.
+activity,Seed-tree Removal Cut (w/ leave trees) (EA/NRH/FH),Mechanical,canopy,medium,Seed-tree removal.
+activity,Shelterwood Establishment Cut (with or without leave trees) (EA/RH/NFH),Mechanical,canopy,medium,Shelterwood regeneration cut.
+activity,Shelterwood Preparatory Cut (EA/NRH/NFH),Mechanical,canopy,medium,Shelterwood preparatory cut.
+activity,Shelterwood Removal Cut (EA/NRH/FH),Mechanical,canopy,medium,Shelterwood removal cut.
+activity,Shelterwood Removal Cut (w/ leave trees) (EA/NRH/FH),Mechanical,canopy,medium,Shelterwood removal cut.
+activity,Two-aged Preparatory Cut (w/res) (2A/NRH/NFH),Mechanical,canopy,medium,Two-aged preparatory cut.
+activity,Two-aged Shelterwood Establishment and Removal Cut (w/ res) (2A/RH/FH),Mechanical,canopy,medium,NCFC activity_map.
+activity,Two-aged Shelterwood Final Removal Cut (w/res) (2A/NRH/FH),Mechanical,canopy,medium,Two-aged shelterwood final removal.
+activity,Broadcast Burning - Covers a majority of the unit,Broadcast Burn,canopy,high,NCFC activity_map.
+activity,Underburn - Low Intensity (Majority of Unit),Broadcast Burn,canopy,high,Underburn covering the majority of the unit = broadcast burn.
+activity,Jackpot Burning - Scattered concentrations,Pile Burn,surface,medium,Scattered concentrations burned; closer to pile than broadcast.
+activity,Site Preparation for Natural Regeneration - Burning,Broadcast Burn,canopy,medium,NCFC activity_map.
+activity,Wildlife Habitat Prescribed fire,Broadcast Burn,canopy,medium,Prescribed fire (wildlife objective).
+activity,Tree Release and Weed,Release,canopy,high,"Objective (release/weed control), not a burn. Split by classify_release (method): chemical->DROP, manual->Lop and Scatter, mechanical->Mastication, fire->quarantine."
+activity,Site Preparation for Natural Regeneration - Other,Mechanical,canopy,low,"Site prep, unspecified method; canopy-wins recovers it as a mechanical treatment rather than dropping. Review."
+activity,Burning of Piled Material,Pile Burn,surface,high,NCFC activity_map.
+activity,"Piling of Fuels, Hand or Machine",Pile Fuels,surface,high,NCFC activity_map.
+activity,Yarding - Removal of Fuels by Carrying or Dragging,Removal,surface,high,NCFC activity_map.
+activity,Chipping of Fuels,Mastication,surface,medium,NCFC activity_map (chipping of surface fuels).
+activity,Compacting/Crushing of Fuels,Mastication,surface,medium,Crushing/compaction of the surface fuel bed.
+activity,Rearrangement of Fuels,Lop and Scatter,surface,high,NCFC activity_map.
+activity,Invasives - Mechanical /Physical,DROP,none,high,Invasive-species control; excluded (NCFC dropped Invasives).
+activity,Invasives - Pesticide Application,DROP,none,high,Herbicide invasive control; excluded.
+activity,Grazing and Range Mgt. for Hazardous Fuels Reduction,DROP,none,high,Grazing; excluded.
+activity,Wildfire - Human Ignition,DROP,none,high,Wildfire event; not a treatment.
+activity,Stocking Survey,DROP,none,medium,"Survey, not a treatment. (NCFC activity_map mapped this to Manual; corrected to DROP — flagged in parity report.)"
+activity,Certification of Natural Regeneration without Site Prep,DROP,none,medium,Regeneration certification survey; not a fuels treatment.
+method,Manual,Manual,canopy,medium,Fallback (type/activity empty): manual cutting.
+method,Manual Logging,Manual,canopy,medium,Fallback: manual logging.
+method,Power Hand,Manual,canopy,medium,Fallback: power hand (chainsaw) work.
+method,Cut trees and brush,Manual,canopy,low,Fallback: manual cutting of trees and brush.
+method,Girdle,Manual,canopy,low,Fallback: girdling (manual mortality treatment).
+method,Mechanical,Mechanical,canopy,medium,Fallback: mechanical treatment.
+method,Tractor Logging,Mechanical,canopy,medium,Fallback: tractor (ground-based) logging.
+method,Logging Methods,Mechanical,canopy,low,Fallback: unspecified logging.
+method,Helicopter,Mechanical,canopy,low,Fallback: helicopter logging.
+method,Highlead,Mechanical,canopy,low,Fallback: cable/highlead yarding.
+method,Jammer,Mechanical,canopy,low,Fallback: jammer cable yarding.
+method,Single Span Skyline,Mechanical,canopy,low,Fallback: skyline yarding.
+method,Stump shearing,Mechanical,canopy,low,Fallback: mechanical stump shearing.
+method,"Crushing, pushing",Mastication,canopy,low,Fallback: mechanical crushing/pushing.
+method,Chipping,Mastication,surface,low,Fallback: chipping.
+method,Utilizer - Chip,Mastication,surface,low,Fallback: chipping utilizer.
+method,Fire,Broadcast Burn,canopy,low,Fallback: fire (ambiguous pile vs broadcast; used only when type/activity empty).
+method,Prescribed Burn,Broadcast Burn,canopy,low,Fallback: prescribed burn (ambiguous pile vs broadcast; used only when type/activity empty).
+method,Hand piling,Pile Fuels,surface,medium,Fallback: hand piling of fuels.
+method,Mechanical pile,Pile Fuels,surface,medium,Fallback: machine piling of fuels.
+method,Removal,Removal,surface,low,Fallback: fuel removal/yarding.
+method,Chemical,DROP,none,high,Chemical/herbicide application; excluded.
+method,Mobile Ground,DROP,none,high,Mobile ground sprayer (chemical application); excluded.
+method,Animal,DROP,none,high,Grazing; excluded.
+method,Firewood Removal,DROP,none,high,Firewood removal; excluded (NCFC filter).
+method,Wildfire,DROP,none,high,Wildfire; excluded (NCFC filter).
+method,Maintenance,DROP,none,low,Non-specific maintenance; not a fuels treatment.
+method,Not Applicable,DROP,none,low,No method recorded.
+twig_category,Mechanical,Thin,canopy,low,Fallback bucket: mechanical treatment (split by classify_thin); used only when type/activity/method empty.
+twig_category,Planned Ignition,Broadcast Burn,canopy,low,Fallback bucket: prescribed fire (ambiguous pile vs broadcast).
+twig_category,Chemical,DROP,none,high,Chemical treatment; excluded.
+twig_category,Biological,DROP,none,high,Biological control; excluded.
+twig_category,Unplanned Ignition,DROP,none,high,Wildfire; not a treatment.
+twig_category,Natural Resources,DROP,none,low,Non-fuels natural-resources activity.
+activity,Wildland Fire Use,Fire Use,canopy,high,"Managed/beneficial fire; kept as its own class, NOT Broadcast Burn."
+activity,Wildfire - Fuels Benefit,Fire Use,canopy,high,"Beneficial wildfire (fuels benefit); Fire Use class, not Broadcast Burn."
+activity,Planned Treatment Burned in Wildfire,Fire Use,canopy,medium,Planned treatment that burned in a wildfire; Fire Use class.
+type,Fire Use,Fire Use,canopy,medium,Fire Use type; activity overrides for human-ignition wildfire (-> DROP).
+activity,"Pollinator habitat improved, restored or maintained",Range,canopy,high,"Range/pollinator objective; classify_range: fire->Prescribed Burn (Range), else DROP."
+activity,Range Cover Manipulation,Range,canopy,high,"Range objective; classify_range by method (fire->Prescribed Burn (Range), else DROP)."
+activity,Range Control Vegetation,Range,canopy,high,Range objective; classify_range by method.
+activity,Range Forage Improvement,Range,canopy,medium,Range objective; classify_range by method.
